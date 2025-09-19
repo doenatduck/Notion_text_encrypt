@@ -30,9 +30,14 @@
     <h1>Offline Text Verschlüsseln / Entschlüsseln</h1>
     <div class="row">
       <div>
-        <label for="password">Passwort</label>
-        <input id="password" type="password" autocomplete="off" placeholder="Passwort">
-      </div>
+  <label for="password">Passwort</label>
+  <div style="display:flex; gap:6px; align-items:center;">
+    <input id="password" type="password" autocomplete="off" placeholder="Passwort" style="flex:1;">
+    <button type="button" id="togglePw" class="muted" 
+            style="width:36px; height:36px; padding:0; font-size:18px; line-height:1; display:flex; align-items:center; justify-content:center;" 
+            title="Passwort ein-/ausblenden">👁</button>
+  </div>
+</div>
       <div>
         <label for="iterations">PBKDF2-Iterationen <small>(Standard: 100 000)</small></label>
         <input id="iterations" type="number" min="10000" step="1000" value="100000">
@@ -144,6 +149,17 @@
   const $optDec = $("#optDec");
 
   function setStatus(msg) { $status.textContent = msg; }
+
+  // Passwort sichtbar/unsichtbar schalten
+  $("#togglePw").addEventListener("click", () => {
+    if ($password.type === "password") {
+      $password.type = "text";
+      $("#togglePw").textContent = "🙈";
+    } else {
+      $password.type = "password";
+      $("#togglePw").textContent = "👁";
+    }
+  });
 
   $("#go").addEventListener("click", async () => {
     setStatus("");
