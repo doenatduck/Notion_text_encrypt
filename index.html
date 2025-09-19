@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Offline-Encrypt/Decrypt (AES-GCM, PBKDF2)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 0; padding: 16px; background: #f6f7f9; }
+    .card { max-width: 880px; margin: 0 auto; background: #fff; border-radius: 10px; padding: 18px; box-shadow: 0 2px 12px rgba(0,0,0,.06); }
+    h1 { font-size: 1.25rem; margin: 0 0 12px; }
+    label { display:block; font-size:.95rem; margin:.5rem 0 .25rem; }
+    input, textarea, button { width:100%; box-sizing:border-box; }
+    input, textarea { padding:10px 12px; border:1px solid #d6d8dc; border-radius:8px; background:#fff; }
+    textarea { min-height: 180px; resize: vertical; }
+    .row { display:flex; gap:12px; flex-wrap: wrap; }
+    .row > * { flex:1 1 260px; }
+    .options { display:flex; gap:18px; align-items:center; margin:.5rem 0 1rem; }
+    .btns { display:flex; gap:10px; flex-wrap: wrap; }
+    button { cursor:pointer; padding:10px 14px; border-radius:8px; border:0; }
+    .primary { background:#2d6cdf; color:#fff; }
+    .secondary { background:#10b981; color:#fff; }
+    .muted { background:#e5e7eb; }
+    pre { white-space:pre-wrap; word-break:break-word; padding:12px; background:#0b1020; color:#e7ecf3; border-radius:8px; }
+    small { color:#6b7280; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Offline Text Verschlüsseln / Entschlüsseln</h1>
+    <div class="row">
+      <div>
+        <label for="password">Passwort</label>
+        <input id="password" type="password" autocomplete="off" placeholder="Passwort">
+      </div>
+      <div>
+        <label for="iterations">PBKDF2-Iterationen <small>(Standard: 100 000)</small></label>
+        <input id="iterations" type="number" min="10000" step="1000" value="100000">
+      </div>
+    </div>
+
+    <label for="text">Text zum Ver-/Entschlüsseln</label>
+    <textarea id="text" placeholder="Klartext zum Verschlüsseln ODER verschlüsseltes JSON zur Entschlüsselung"></textarea>
+
+    <div class="options">
+      <label><input type="radio" name="mode" id="optEnc" checked> Verschlüsseln</label>
+      <label><input type="radio" name="mode" id="optDec"> Entschlüsseln</label>
+    </div>
+
+    <div class="btns">
+      <button id="go" class="primary">Ausführen</button>
+      <button id="copy" class="secondary">Ergebnis kopieren</button>
+      <button id="clear" class="muted">Felder leeren</button>
+    </div>
+
+    <h1 style="margin-top:16px">Ergebnis</h1>
+    <pre id="result"></pre>
+    <small id="status"></small>
+  </div>
+
+<script>
+  // ---- Hilfsfunktionen: Encoding / Decoding ----
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+
+  function toBase64(u8) {
+    let s = "";
+    u8.forEach(b => s += String.fromCharCode(b));
+    return btoa(s);
+  }
+
+  function fromBase64(b64) {
+    const s = atob(b64);
+    const u8 = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u8[i] = s.charCodeAt(i);
+    return u8;
+  }
+
+  // ---- KDF (PBKDF2) & AES-GCM ----
+  async function deriveKey(password, salt, iterations=100000) {
+    const pwKey = await crypto.subtle.importKey(
+      "raw", enc.encode(password), { name: "PBKDF2" }, false, ["deriveKey"]
+    );
+    return crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+      pwKey,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"]
+    );
+  }
+
+  async function encryptString(plaintext, password, iterations) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv   = crypto.getRandomValues(new Uint8Array(12));
+    const key  = await deriveKey(password, salt, iterations);
+    const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(plaintext));
+    const ct = new Uint8Array(ctBuf);
+    // Verpacken als JSON für einfache Übertragung
+    const payload = {
+      v: 1,
+      algo: "AES-GCM",
+      kdf: "PBKDF2-SHA256",
+      iter: iterations,
+      salt: toBase64(salt),
+      iv: toBase64(iv),
+      ct: toBase64(ct)
+    };
+    return JSON.stringify(payload, null, 2);
+  }
+
+  async function decryptString(payloadText, password) {
+    let payload;
+    try {
+      payload = JSON.parse(payloadText);
+    } catch (e) {
+      throw new Error("Eingabe ist kein gültiges JSON. Bitte den verschlüsselten JSON-Block einfügen.");
+    }
+    if (!payload || payload.v !== 1 || payload.algo !== "AES-GCM" || !payload.ct || !payload.iv || !payload.salt) {
+      throw new Error("Unerwartetes Format. Felder v, algo, ct, iv, salt erforderlich.");
+    }
+    const salt = fromBase64(payload.salt);
+    const iv   = fromBase64(payload.iv);
+    const ct   = fromBase64(payload.ct);
+    const iters = Number(payload.iter) || 100000;
+
+    const key = await deriveKey(password, salt, iters);
+    try {
+      const ptBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+      return dec.decode(ptBuf);
+    } catch (e) {
+      throw new Error("Entschlüsselung fehlgeschlagen (falsches Passwort oder beschädigte Daten).");
+    }
+  }
+
+  // ---- UI-Logik ----
+  const $ = sel => document.querySelector(sel);
+  const $password = $("#password");
+  const $iterations = $("#iterations");
+  const $text = $("#text");
+  const $result = $("#result");
+  const $status = $("#status");
+  const $optEnc = $("#optEnc");
+  const $optDec = $("#optDec");
+
+  function setStatus(msg) { $status.textContent = msg; }
+
+  $("#go").addEventListener("click", async () => {
+    setStatus("");
+    const pwd = $password.value || "";
+    if (!pwd) { setStatus("Bitte ein Passwort eingeben."); return; }
+
+    try {
+      if ($optEnc.checked) {
+        const iters = Math.max(10000, Number($iterations.value) || 100000);
+        const out = await encryptString($text.value || "", pwd, iters);
+        $result.textContent = out;
+      } else {
+        const out = await decryptString($text.value || "", pwd);
+        $result.textContent = out;
+      }
+      setStatus("Fertig.");
+    } catch (e) {
+      $result.textContent = "";
+      setStatus(e.message || String(e));
+    }
+  });
+
+  $("#copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($result.textContent || "");
+      setStatus("Ergebnis in Zwischenablage kopiert.");
+    } catch {
+      setStatus("Kopieren nicht möglich (Berechtigung).");
+    }
+  });
+
+  $("#clear").addEventListener("click", () => {
+    $text.value = "";
+    $result.textContent = "";
+    setStatus("Bereit.");
+  });
+
+  // Kleine UX: Umschalten setzt Beispiel-Placeholder
+  $optEnc.addEventListener("change", () => {
+    if ($optEnc.checked) $text.placeholder = "Klartext zum Verschlüsseln …";
+  });
+  $optDec.addEventListener("change", () => {
+    if ($optDec.checked) $text.placeholder = "Verschlüsseltes JSON zum Entschlüsseln …";
+  });
+
+  setStatus("Bereit.");
+</script>
+</body>
+</html>
